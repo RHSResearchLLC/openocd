@@ -23,6 +23,7 @@
 #include <jtag/jtag.h>
 #include <flash/nor/spi.h>
 #include <helper/time_support.h>
+#include <string.h>
 
 #define JTAGSPI_MAX_TIMEOUT 3000
 
@@ -33,6 +34,11 @@ struct jtagspi_flash_bank {
 	bool probed;
 	uint32_t ir;
 };
+
+static int does_name_start_with(const struct jtagspi_flash_bank* info, const char* str)
+{
+	return (0 == strncmp(info->dev->name, str, strlen(str))) ? 1 : 0;
+}
 
 FLASH_BANK_COMMAND_HANDLER(jtagspi_flash_bank_command)
 {
@@ -278,6 +284,7 @@ static int jtagspi_write_enable(struct flash_bank *bank)
 		LOG_ERROR("Cannot enable write to flash. Status=0x%08" PRIx32, status);
 		return ERROR_FAIL;
 	}
+
 	return ERROR_OK;
 }
 
@@ -359,6 +366,37 @@ static int jtagspi_erase(struct flash_bank *bank, unsigned int first,
 			break;
 		}
 	}
+
+#if 1
+	LOG_USER("Checking for QSPI capable flash\n");
+	if (does_name_start_with(info, "issi is25lp")) {
+		// Once erase is done, set non-volatile "Quad Enable" bit in the status register
+		// Status register writes need the write enable set
+		LOG_USER("Enabling QSPI write for %s\n", info->dev->name);
+		jtagspi_write_enable(bank);
+
+		uint8_t qspi_enable = 0x40;           // D6:"QE" 
+		const uint8_t SPIFLASH_WRSR = 0x01;   // Write status register
+		jtagspi_cmd(bank, SPIFLASH_WRSR, NULL, &qspi_enable, 8);
+		jtagspi_wait(bank, JTAGSPI_MAX_TIMEOUT);
+	}
+	else if (does_name_start_with(info, "sp s25fl")) {
+		LOG_USER("Found S25FL\n");
+
+		// Now, these differ based on the last letter- F,L,S, etc
+		char fseries = info->dev->name[strlen(info->dev->name)-1];
+		if (fseries == 'k') {
+			LOG_USER("Enabling QSPI write for %s\n", info->dev->name);
+
+			jtagspi_write_enable(bank);
+			const uint8_t SPIFLASH_WRSR = 0x01;   // Write status register command
+			uint8_t SREGS_DAT[3] = {0x00, 0x06, 0x70};  // Write status register data- all 3 status registers
+			jtagspi_cmd(bank, SPIFLASH_WRSR, NULL, SREGS_DAT, 8 * sizeof(SREGS_DAT));
+			jtagspi_wait(bank, JTAGSPI_MAX_TIMEOUT);
+		}
+
+	}
+#endif
 
 	return retval;
 }
